@@ -68,16 +68,16 @@ def print_com_data(robot):
 def set_standing_pose(robot):
     # note angles are in radians
     standing_pose = {
-        "FL": [0.0, 0.5, -1.0], 
+        "FL": [0.0, 0.5, -1.0],
         "FR": [0.0, 0.5, -1.0],
         "HL": [0.0, 0.5, -1.0],
         "HR": [0.0, 0.5, -1.0]
     }
 
-    FL_joints = [0, 1, 2]  
-    FR_joints = [4, 5, 6]  
-    HL_joints = [8, 9, 10]  
-    HR_joints = [12, 13, 14]  
+    FL_joints = [0, 1, 2]
+    FR_joints = [4, 5, 6]
+    HL_joints = [8, 9, 10]
+    HR_joints = [12, 13, 14]
 
     # Set joint positions for each leg
     for joints, angles in zip([FL_joints, FR_joints, HL_joints, HR_joints],
@@ -85,6 +85,72 @@ def set_standing_pose(robot):
                                standing_pose["HL"], standing_pose["HR"]]):
         for joint, angle in zip(joints, angles):
             p.resetJointState(robot, joint, angle)
+            p.setJointMotorControl2(robot, joint,
+                                    p.POSITION_CONTROL,
+                                    targetPosition=angle,
+                                    force=1000)
+
+
+def generate_harmonic_motion(robot):
+    '''Generate harmonic motion for each leg - simplified stance phase only'''
+    # Define motion parameters
+    step_length = 0.10  # Length of the step in meters
+    frequency = 1.0  # Hz - frequency of the leg cycle
+
+    # Define leg joints
+    legs = {
+        "FL": [0, 1, 2],  # Front Left - HAA, HFE, KFE
+        "FR": [4, 5, 6],  # Front Right - HAA, HFE, KFE
+        "HL": [8, 9, 10],  # Hind Left - HAA, HFE, KFE
+        "HR": [12, 13, 14]  # Hind Right - HAA, HFE, KFE
+    }
+
+    # Define phase relationships for trot gait (diagonal legs in phase)
+    # For a trot gait: FL and HR move together, FR and HL move together
+    phases = {
+        "FL": 0,  # Front Left
+        "FR": np.pi,  # Front Right (180° out of phase)
+        "HL": np.pi,  # Hind Left (180° out of phase)
+        "HR": 0  # Hind Right
+    }
+
+    # Standing pose - these are the base positions from which we'll add motion
+    standing_angles = {
+        "FL": [0.0, 0.5, -1.0],
+        "FR": [0.0, 0.5, -1.0],
+        "HL": [0.0, 0.5, -1.0],
+        "HR": [0.0, 0.5, -1.0]
+    }
+
+    # Current time (seconds)
+    current_time = time.time()
+
+    # For each leg, calculate the joint angles for stance phase
+    for leg_name, joints in legs.items():
+        phase = phases[leg_name]
+
+        # Calculate the current position in the cycle
+        cycle_position = np.sin(2 * np.pi * frequency * current_time + phase)
+
+        # Get base angles for this leg
+        base_angles = standing_angles[leg_name]
+
+        # Simple stance phase: just oscillate the HFE joint (hip) back and forth
+        # This creates a backward motion of the foot when it's on the ground
+        hfe_offset = step_length * cycle_position * 0.5  # Scale down for reasonable motion
+
+        # Apply the motion to the joints
+        # HAA stays the same as standing pose
+        # HFE gets the oscillation offset
+        # KFE stays the same as standing pose
+        target_angles = [
+            base_angles[0],  # HAA - unchanged
+            base_angles[1] + hfe_offset,  # HFE - with oscillation
+            base_angles[2]  # KFE - unchanged
+        ]
+
+        # Apply the calculated joint angles
+        for joint, angle in zip(joints, target_angles):
             p.setJointMotorControl2(robot, joint,
                                     p.POSITION_CONTROL,
                                     targetPosition=angle,
@@ -139,12 +205,32 @@ def main():
     set_standing_pose(robot)
 
     # Let simulation settle
-    for _ in range(1000):
-    # while True:
+    for _ in range(100):
+        p.stepSimulation()
+        time.sleep(0.01)
+
+    print("\n============================================")
+    print("Starting harmonic motion...")
+
+    # Run simulation with harmonic motion
+    start_time = time.time()
+    sim_duration = 30.0  # Run for 30 seconds
+
+    while time.time() - start_time < sim_duration:
+        # Apply harmonic motion
+        generate_harmonic_motion(robot)
+
+        # Step the simulation
         p.stepSimulation()
 
-        # Monitor robot state
-        monitor_robot_state(robot)
+        # Print state periodically (every 1 second)
+        elapsed_time = time.time() - start_time
+        if int(elapsed_time) != int(elapsed_time - 0.01):  # Only print once per second
+            pos, euler = get_base_pose(robot)
+            print(f"\nTime: {elapsed_time:.1f}s")
+            print(f"Base Position: {[f'{x:.3f}' for x in pos]}")
+
+        time.sleep(0.01)  # 100 Hz control loop
 
     p.disconnect()
 
