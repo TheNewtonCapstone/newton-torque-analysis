@@ -91,30 +91,21 @@ def set_standing_pose(robot):
                                     force=1000)
 
 
-def generate_harmonic_motion(robot):
-    '''Generate harmonic motion for each leg - simplified stance phase only'''
+def generate_bouncing_motion(robot):
+    '''Generate synchronized bouncing motion for all legs'''
     # Define motion parameters
-    step_length = 0.10  # Length of the step in meters
-    frequency = 1.0  # Hz - frequency of the leg cycle
+    amplitude = 0.15      # Amount of joint angle change
+    frequency = 1.5       # Hz - frequency of bouncing
 
     # Define leg joints
     legs = {
-        "FL": [0, 1, 2],  # Front Left - HAA, HFE, KFE
-        "FR": [4, 5, 6],  # Front Right - HAA, HFE, KFE
-        "HL": [8, 9, 10],  # Hind Left - HAA, HFE, KFE
+        "FL": [0, 1, 2],    # Front Left - HAA, HFE, KFE
+        "FR": [4, 5, 6],    # Front Right - HAA, HFE, KFE
+        "HL": [8, 9, 10],   # Hind Left - HAA, HFE, KFE
         "HR": [12, 13, 14]  # Hind Right - HAA, HFE, KFE
     }
 
-    # Define phase relationships for trot gait (diagonal legs in phase)
-    # For a trot gait: FL and HR move together, FR and HL move together
-    phases = {
-        "FL": 0,  # Front Left
-        "FR": np.pi,  # Front Right (180° out of phase)
-        "HL": np.pi,  # Hind Left (180° out of phase)
-        "HR": 0  # Hind Right
-    }
-
-    # Standing pose - these are the base positions from which we'll add motion
+    # Standing pose - baseline positions
     standing_angles = {
         "FL": [0.0, 0.5, -1.0],
         "FR": [0.0, 0.5, -1.0],
@@ -125,28 +116,28 @@ def generate_harmonic_motion(robot):
     # Current time (seconds)
     current_time = time.time()
 
-    # For each leg, calculate the joint angles for stance phase
+    # Calculate current oscillation value (same for all legs)
+    # Use absolute value of sine to create a bouncing effect
+    bounce_position = np.abs(np.sin(2 * np.pi * frequency * current_time))
+
+    # For each leg, apply the same motion
     for leg_name, joints in legs.items():
-        phase = phases[leg_name]
-
-        # Calculate the current position in the cycle
-        cycle_position = np.sin(2 * np.pi * frequency * current_time + phase)
-
         # Get base angles for this leg
         base_angles = standing_angles[leg_name]
 
-        # Simple stance phase: just oscillate the HFE joint (hip) back and forth
-        # This creates a backward motion of the foot when it's on the ground
-        hfe_offset = step_length * cycle_position * 0.5  # Scale down for reasonable motion
+        # For bouncing up and down, we need to extend and flex both the hip and knee
+        # When bounce_position is high, the leg extends (straightens) to push the body up
+        # When bounce_position is low, the leg flexes to lower the body
+
+        # Modify both HFE (hip) and KFE (knee) to create vertical motion
+        hfe_offset = -amplitude * bounce_position     # Negative to straighten hip
+        kfe_offset = amplitude * bounce_position * 2  # Positive to straighten knee (multiplied for more effect)
 
         # Apply the motion to the joints
-        # HAA stays the same as standing pose
-        # HFE gets the oscillation offset
-        # KFE stays the same as standing pose
         target_angles = [
-            base_angles[0],  # HAA - unchanged
-            base_angles[1] + hfe_offset,  # HFE - with oscillation
-            base_angles[2]  # KFE - unchanged
+            base_angles[0],                # HAA - unchanged (lateral motion)
+            base_angles[1] + hfe_offset,   # HFE - with oscillation
+            base_angles[2] + kfe_offset    # KFE - with oscillation
         ]
 
         # Apply the calculated joint angles
@@ -210,25 +201,25 @@ def main():
         time.sleep(0.01)
 
     print("\n============================================")
-    print("Starting harmonic motion...")
+    print("Starting bouncing motion...")
 
-    # Run simulation with harmonic motion
+    # Run simulation with bouncing motion
     start_time = time.time()
     sim_duration = 30.0  # Run for 30 seconds
 
     while time.time() - start_time < sim_duration:
-        # Apply harmonic motion
-        generate_harmonic_motion(robot)
+        # Apply bouncing motion
+        generate_bouncing_motion(robot)
 
         # Step the simulation
         p.stepSimulation()
 
-        # Print state periodically (every 1 second)
+        # Print state periodically (every second)
         elapsed_time = time.time() - start_time
         if int(elapsed_time) != int(elapsed_time - 0.01):  # Only print once per second
             pos, euler = get_base_pose(robot)
             print(f"\nTime: {elapsed_time:.1f}s")
-            print(f"Base Position: {[f'{x:.3f}' for x in pos]}")
+            print(f"Base Height: {pos[2]:.3f} m")
 
         time.sleep(0.01)  # 100 Hz control loop
 
