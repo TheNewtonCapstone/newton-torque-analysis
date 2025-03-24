@@ -1,0 +1,244 @@
+# Import required libraries
+import pybullet as p
+import numpy as np
+import time
+import pybullet_data
+from core.simulation import Simulation
+from controllers.trotting import TrottingController
+from controllers.walking import WalkingController
+
+
+def setup_simulation():
+    physClient = p.connect(p.GUI)
+    p.setAdditionalSearchPath(pybullet_data.getDataPath())
+
+    p.resetSimulation()
+    p.setGravity(0, 0, -9.81)
+
+    plane = p.loadURDF("plane.urdf")
+
+    robot = p.loadURDF("newton/newton.urdf", [0, 0, 0.33])
+    controller = TrottingController(robot)
+
+    return physClient, robot
+
+
+def add_gravity_vector_visualization(start_pos=[1, 0, 0.33], end_pos=[1, 0, 0.23]):
+    p.addUserDebugLine(start_pos, end_pos, [1, 0, 0], 2)  # Red line
+
+
+def get_base_pose(robot):
+    pos, orn = p.getBasePositionAndOrientation(robot)
+    euler = p.getEulerFromQuaternion(orn)
+    return pos, euler
+
+
+def print_com_data(robot):
+    num_joints = p.getNumJoints(robot)
+    total_mass = 0
+    weighted_pos = np.zeros(3)
+
+    dyn_info = p.getDynamicsInfo(robot, -1)  # -1 for base link
+    base_mass = dyn_info[0]
+    base_pos, base_orn = p.getBasePositionAndOrientation(robot)
+    total_mass += base_mass
+    weighted_pos += np.array(base_pos) * base_mass
+
+    print(f"\nBase mass: {base_mass:.3f} kg")
+    print(f"Base position: {base_pos}")
+
+    for i in range(num_joints):
+        dyn_info = p.getDynamicsInfo(robot, i)
+        link_mass = dyn_info[0]
+        local_inertial_pos = dyn_info[3]
+
+        link_state = p.getLinkState(robot, i)
+        link_com_pos = link_state[0]  # World position of center of mass
+
+        total_mass += link_mass
+        weighted_pos += np.array(link_com_pos) * link_mass
+
+        print(f"\nLink {i} ({p.getJointInfo(robot, i)[1].decode('utf-8')}):")
+        print(f"Mass: {link_mass:.3f} kg")
+        print(f"CoM Position: {link_com_pos}")
+
+    # Calculate overall center of mass
+    if total_mass > 0:
+        com = weighted_pos / total_mass
+        print(f"\nTotal mass: {total_mass:.3f} kg")
+        print(f"Overall Center of Mass: {com}")
+
+
+def set_standing_pose(robot):
+    # note angles are in radians
+    standing_pose = {
+        "FL": [0.0, 0.5, -1.0],
+        "FR": [0.0, 0.5, -1.0],
+        "HL": [0.0, 0.5, -1.0],
+        "HR": [0.0, 0.5, -1.0]
+    }
+
+    FL_joints = [0, 1, 2]
+    FR_joints = [4, 5, 6]
+    HL_joints = [8, 9, 10]
+    HR_joints = [12, 13, 14]
+
+    # Set joint positions for each leg
+    for joints, angles in zip([FL_joints, FR_joints, HL_joints, HR_joints],
+                              [standing_pose["FL"], standing_pose["FR"],
+                               standing_pose["HL"], standing_pose["HR"]]):
+        for joint, angle in zip(joints, angles):
+            p.resetJointState(robot, joint, angle)
+            p.setJointMotorControl2(robot, joint,
+                                    p.POSITION_CONTROL,
+                                    targetPosition=angle,
+                                    force=1000)
+
+
+def generate_bouncing_motion(robot):
+    '''Generate synchronized bouncing motion for all legs'''
+    # Define motion parameters
+    amplitude = 0.15      # Amount of joint angle change
+    frequency = 1.5       # Hz - frequency of bouncing
+
+    # Define leg joints
+    legs = {
+        "FL": [0, 1, 2],    # Front Left - HAA, HFE, KFE
+        "FR": [4, 5, 6],    # Front Right - HAA, HFE, KFE
+        "HL": [8, 9, 10],   # Hind Left - HAA, HFE, KFE
+        "HR": [12, 13, 14]  # Hind Right - HAA, HFE, KFE
+    }
+
+    # Standing pose - baseline positions
+    standing_angles = {
+        "FL": [0.0, 0.5, -1.0],
+        "FR": [0.0, 0.5, -1.0],
+        "HL": [0.0, 0.5, -1.0],
+        "HR": [0.0, 0.5, -1.0]
+    }
+
+    # Current time (seconds)
+    current_time = time.time()
+
+    # Calculate current oscillation value (same for all legs)
+    # Use absolute value of sine to create a bouncing effect
+    bounce_position = np.abs(np.sin(2 * np.pi * frequency * current_time))
+
+    # For each leg, apply the same motion
+    for leg_name, joints in legs.items():
+        # Get base angles for this leg
+        base_angles = standing_angles[leg_name]
+
+        # For bouncing up and down, we need to extend and flex both the hip and knee
+        # When bounce_position is high, the leg extends (straightens) to push the body up
+        # When bounce_position is low, the leg flexes to lower the body
+
+        # Modify both HFE (hip) and KFE (knee) to create vertical motion
+        hfe_offset = -amplitude * bounce_position     # Negative to straighten hip
+        kfe_offset = amplitude * bounce_position * 2  # Positive to straighten knee (multiplied for more effect)
+
+        # Apply the motion to the joints
+        target_angles = [
+            base_angles[0],                # HAA - unchanged (lateral motion)
+            base_angles[1] + hfe_offset,   # HFE - with oscillation
+            base_angles[2] + kfe_offset    # KFE - with oscillation
+        ]
+
+        # Apply the calculated joint angles
+        for joint, angle in zip(joints, target_angles):
+            p.setJointMotorControl2(robot, joint,
+                                    p.POSITION_CONTROL,
+                                    targetPosition=angle,
+                                    force=1000)
+
+
+def monitor_robot_state(robot, duration=10.0, dt=0.1):
+    # Enable torque sensors for all joints
+    for i in range(p.getNumJoints(robot)):
+        p.enableJointForceTorqueSensor(robot, i, enableSensor=1)
+
+    start_time = time.time()
+    while time.time() - start_time < duration:
+        pos, euler = get_base_pose(robot)
+        print("\n=== Robot State ===")
+        print(f"Base Position: {[f'{x:.3f}' for x in pos]}")
+        print(f"Base Orientation (deg): {[f'{np.degrees(x):.2f}' for x in euler]}")
+
+        # Print joint torques
+        print("\n=== Joint Torques Analysis ===")
+        print("\nLeg      | HAA (N·m)  | HFE (N·m)  | KFE (N·m) ")
+        print("---------------------------------------------")
+
+        legs = {
+            "FL": [0, 1, 2],  # Front Left
+            "FR": [4, 5, 6],  # Front Right
+            "HL": [8, 9, 10],  # Hind Left
+            "HR": [12, 13, 14]  # Hind Right
+        }
+
+        for leg_name, joints in legs.items():
+            torques = []
+            for idx in joints:
+                joint_state = p.getJointState(robot, idx)
+                torques.append(joint_state[3])  # index 3 is applied torque
+
+            print(f"{leg_name:<8} | {torques[0]:>9.3f} | {torques[1]:>9.3f} | {torques[2]:>9.3f}")
+
+        p.stepSimulation()
+        time.sleep(dt)
+
+def main():
+    # Setup simulation
+    # physClient, robot = setup_simulation()
+    #
+    # add_gravity_vector_visualization()
+    #
+    # print("\n============================================")
+    # print_com_data(robot)
+    #
+    # set_standing_pose(robot)
+    #
+    # # Let simulation settle
+    # for _ in range(100):
+    #     p.stepSimulation()
+    #     time.sleep(0.01)
+    #
+    # print("\n============================================")
+    # print("Starting bouncing motion...")
+    #
+    # # Run simulation with bouncing motion
+    # start_time = time.time()
+    # sim_duration = 30.0  # Run for 30 seconds
+    #
+    # while time.time() - start_time < sim_duration:
+    #     # Apply bouncing motion
+    #     generate_bouncing_motion(robot)
+    #
+    #     # Step the simulation
+    #     p.stepSimulation()
+    #
+    #     # Print state periodically (every second)
+    #     elapsed_time = time.time() - start_time
+    #     if int(elapsed_time) != int(elapsed_time - 0.01):  # Only print once per second
+    #         pos, euler = get_base_pose(robot)
+    #         print(f"\nTime: {elapsed_time:.1f}s")
+    #         print(f"Base Height: {pos[2]:.3f} m")
+    #
+    #     time.sleep(0.01)  # 100 Hz control loop
+    #
+    # p.disconnect()
+
+
+    sim = Simulation(gui_mode=p.GUI)
+    sim.connect()
+    sim.load_ground_plane()
+    robot = sim.load_robot("newton/newton.urdf", [0, 0, 0.33])
+    # controller = TrottingController(robot)
+    controller = WalkingController(robot)
+    sim.set_controller(controller)
+    sim.run()
+    sim.clean()
+
+
+if __name__ == "__main__":
+    main()

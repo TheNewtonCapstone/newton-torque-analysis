@@ -12,6 +12,20 @@ from numpy import ndarray
 
 
 @dataclass
+class State:
+    """ """
+    pos: np.ndarray
+    orn: np.ndarray
+    linear_vel: np.ndarray
+    vel_wf: np.ndarray # velocity in world frame
+    angular_vel: np.ndarray # ri
+
+    # leg positions dict with leg name as key and list of joint positions as value
+    joint_pos: Dict[str, List[float]] = None
+    joint_velocities: Dict[str, List[float]] = None
+    foot_contacts: Dict[str, bool] = None
+
+@dataclass
 class JointChain:
     """ """
     robot_id: int
@@ -50,8 +64,8 @@ class JointChain:
             self.world_joint_orn[i] = np.array(state[1])
 
     def set_joint_pos(self, pose: List[float])->None:
-        print(pose)
-        print([self.haa_idx, self.hfe_inx, self.kfe_idx])
+        # print(pose)
+        # print([self.haa_idx, self.hfe_inx, self.kfe_idx])
         p.setJointMotorControlArray(
             self.robot_id,
             jointIndices=[self.haa_idx, self.hfe_inx, self.kfe_idx],
@@ -146,6 +160,25 @@ class Robot:
         self.control_mode: int = p.POSITION_CONTROL
         self.ordered_jts_idx: List[int] = []
         self.legs: Optional[Dict[str, JointChain]] = {}
+        self.standing_pose = {
+            "fl": [0.0, 0.5, -1.5],
+            "fr": [0.0, 0.5, -1.5],
+            "hl": [0.0, 0.5, -1.5],
+            "hr": [0.0, 0.5, -1.5]
+        }
+
+        self.standing_pose = {
+            "fl": [0.0, -0.5, 1],
+            "fr": [0.0, -0.5, 1],
+            "hl": [0.0, -0.5, 1],
+            "hr": [0.0, -0.5, 1]
+        }
+        self.FL_joints = [0, 1, 2]
+        self.FR_joints = [4, 5, 6]
+        self.HL_joints = [8, 9, 10]
+        self.HR_joints = [12, 13, 14]
+
+
         self.reset()
 
     def reset(self):
@@ -283,6 +316,7 @@ class Robot:
         # calculate the center of mass
         return weighted_pos / total_mass if total_mass > 0 else np.zeros(3)
 
+
     def get_contact_points(self):
         """ Get the contact points of the robot with the ground"""
         info = p.getContactPoints(self.id, physicsClientId=self.physics_client)
@@ -290,23 +324,63 @@ class Robot:
         pprint.PrettyPrinter(indent=4).pprint(info)
 
 
+
+
+    def step(self, actions)->State:
+        self.set_pos(actions)
+        pos, orn = p.getBasePositionAndOrientation(self.id, physicsClientId=self.physics_client)
+        linear_vel, angular_vel = p.getBaseVelocity(self.id, physicsClientId=self.physics_client)
+
+        # get all the joint positions
+        joint_poses = {}
+        for leg in self.legs.values():
+            joint_poses[leg.name] = []
+            for joint_name in leg.joint_names:
+                joint_poses[leg.name].append(self.get_joint_state(joint_name).position)
+
+        # get the velocity of the joints
+        joint_velocities = {}
+        for leg in self.legs.values():
+            joint_velocities[leg.name] = []
+            for joint_name in leg.joint_names:
+                joint_velocities[leg.name].append(self.get_joint_state(joint_name).velocity)
+
+
+        # get foot contacts
+        foot_contacts = {}
+        for leg in self.legs.values():
+            foot_contacts[leg.name] = p.getContactPoints(self.id, leg.ankle_idx, physicsClientId=self.physics_client)
+
+        return State(
+            pos=np.array(pos),
+            orn=np.array(orn),
+            linear_vel=np.array(linear_vel),
+            vel_wf=np.array(angular_vel),
+            angular_vel=np.array(angular_vel),
+            joint_pos=joint_poses,
+            joint_velocities=joint_velocities,
+            foot_contacts=foot_contacts # NOT WORKING
+        )
+
     def set_standing_pose(self):
-        """ Set the robot to a standing pose"""
-        standing_pose = [
-            [1, 0.5, -1.0],
-            [-1, 0.5, -1.0],
-            [0, 0.5, -1.0],
-            [0, 0.5, -1.0]]
-        for i, leg in enumerate(self.legs):
-            self.legs[leg].set_joint_pos(standing_pose[i])
+        return self.set_pos(self.standing_pose)
 
 
 
+    def set_pos(self, pos: dict[str, List[float]]):
+        for joints, angles in zip([self.FL_joints, self.FR_joints, self.HL_joints, self.HR_joints],
+            [pos["fl"], pos["fr"], pos["hl"], pos["hr"]]):
+            for joint, angle in zip(joints, angles):
+                p.resetJointState(self.id, joint, angle)
+                p.setJointMotorControl2(self.id, joint,
+                                        p.POSITION_CONTROL,
+                                        targetPosition=angle,
+                                        force=1000)
 
 
 
-
-
+    def get_standing_pose(self):
+        return self.standing_pose
 
 
 
